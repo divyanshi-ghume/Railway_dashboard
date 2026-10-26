@@ -507,6 +507,10 @@ Contributions, bug reports, and feature suggestions are welcome.
 4. Test your changes locally.
 5. Submit a pull request with a clear description.
 
+### Contributors
+
+- [Sudhanshugochar](https://github.com/Sudhanshugochar)
+
 ## 📄 License
 
 Add your chosen open-source license to the repository before publishing a license statement. For example, you may use the MIT License if that matches your intended project terms.
