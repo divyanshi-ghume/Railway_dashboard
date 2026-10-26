@@ -2,6 +2,8 @@
 
 A Streamlit dashboard that reads train and station Gold Parquet snapshots from a **private** S3 bucket. The Airflow/PySpark pipeline can continue running independently; this app reads the latest complete object when it reruns and caches it for five minutes.
 
+The dashboard uses a high-contrast dark theme, summary KPIs, train/station comparisons, interactive Gold-column filters, metric distributions, filtered CSV downloads, and snapshot/data-quality checks. Additional KPIs and charts are selected automatically when matching numeric columns exist in the Gold Parquet data.
+
 ## Run locally
 
 ```powershell
