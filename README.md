@@ -1,36 +1,153 @@
-# RailPulse — Indian Railway Analytics Dashboard
+Here’s a complete README you can copy into your GitHub repository and edit as needed. It describes the dashboard we built and the data/configuration it currently expects.
 
-A Streamlit dashboard that reads train and station Gold Parquet snapshots from a **private** S3 bucket. The Airflow/PySpark pipeline can continue running independently; this app reads the latest complete object when it reruns and caches it for five minutes.
+````markdown
+# 🚆 RailPulse — Indian Railways Analytics Dashboard
 
-The dashboard uses a high-contrast dark theme, summary KPIs, train/station comparisons, interactive Gold-column filters, metric distributions, filtered CSV downloads, and snapshot/data-quality checks. Additional KPIs and charts are selected automatically when matching numeric columns exist in the Gold Parquet data.
+RailPulse is an interactive dashboard for exploring Indian Railway train and station analytics. It reads Parquet datasets from a private Amazon S3 Gold layer and presents the data in a dark-themed Streamlit app.
 
-## Run locally
+The dashboard is designed to work alongside an Airflow and PySpark data pipeline: the pipeline processes and publishes Gold data, while the dashboard reads the latest available train and station snapshots.
 
-```powershell
-cd dashboard
-python -m pip install -r requirements.txt
-streamlit run app.py
+> **Hosting:** Streamlit Community Cloud  
+> **Data storage:** Private Amazon S3  
+> **Data format:** Apache Parquet
+
+---
+
+## Dashboard features
+
+- **Dark interface** with high-contrast text, charts, and metric cards.
+- **Overview page** with train and station charts.
+- **Train and station analytics** with controls to choose:
+  - A numeric performance metric.
+  - A category to group results by.
+  - How many top results to display.
+  - Optional category values to filter.
+- **Summary metrics**, including record counts, unique trains and stations, and additional averages when matching numeric columns are available.
+- **Metric distribution charts** to help explore variation in the selected data.
+- **Filtered CSV downloads** for train and station data.
+- **Data freshness view** showing the source Parquet files and their last-modified timestamps.
+- **Data quality summary** with row and column counts, missing values, duplicate rows, and numeric metric counts.
+- **Manual refresh button** to clear the data cache and fetch the current S3 snapshots.
+
+KPIs and charts adapt to the columns in your Parquet data. Metrics such as average delay, distance, or passenger count appear when the matching columns exist.
+
+---
+
+## Architecture
+
+```text
+Airflow DAG
+    │
+    ▼
+PySpark transformations
+    │
+    ▼
+Amazon S3 — Gold layer
+    ├── Train analytics (Parquet)
+    └── Station analytics (Parquet)
+              │
+              ▼
+Streamlit Community Cloud
+              │
+              ▼
+Interactive RailPulse dashboard
 ```
 
-Add these keys to Streamlit Community Cloud's app **Secrets** settings (or put them in `.streamlit/secrets.toml` at the repository root for local development; that file is ignored by Git):
+The dashboard does not run the Airflow or PySpark pipeline. It reads data that the pipeline has already published to S3.
+
+---
+
+## Technology stack
+
+| Technology | Purpose |
+|---|---|
+| Python | Dashboard application |
+| Streamlit | Web interface, user controls, and hosting |
+| Amazon S3 | Private storage for Gold datasets |
+| Boto3 | Connects to S3 and reads objects |
+| pandas | Loads, filters, summarizes, and exports data |
+| PyArrow | Reads Parquet files |
+| Plotly Express | Interactive charts |
+
+Python dependencies are listed in [`dashboard/requirements.txt`](dashboard/requirements.txt).
+
+---
+
+## Expected S3 data layout
+
+The dashboard can use either separate prefixes for train and station data, or a shared Gold prefix with recognizable train and station paths.
+
+### Option 1: Separate prefixes
+
+```text
+s3://YOUR_BUCKET/YOUR_TRAIN_PREFIX/train_snapshot.parquet
+s3://YOUR_BUCKET/YOUR_STATION_PREFIX/station_snapshot.parquet
+```
+
+Configure these secrets:
+
+```toml
+TRAIN_PREFIX = "railway-gold/trains/"
+STATION_PREFIX = "railway-gold/stations/"
+```
+
+### Option 2: One shared Gold prefix
+
+```text
+s3://YOUR_BUCKET/railway-gold/trains/train_snapshot.parquet
+s3://YOUR_BUCKET/railway-gold/stations/station_snapshot.parquet
+```
+
+Configure:
+
+```toml
+S3_GOLD_PREFIX = "railway-gold/"
+```
+
+With a shared prefix, the dashboard looks for `train`/`trains` and `station`/`stations` in the Parquet object paths or filenames. If your pipeline uses different names, configure `TRAIN_PREFIX` and `STATION_PREFIX` with the exact prefixes instead.
+
+The app selects the **most recently modified Parquet object** for each dataset. Publish complete snapshots with distinct object names or otherwise ensure a snapshot is complete before the dashboard reads it. The current app reads one Parquet object per dataset; it does not combine a multi-file partitioned Parquet dataset.
+
+---
+
+## Set up Streamlit secrets
+
+The dashboard needs read-only credentials to access a private S3 bucket. Add the following as top-level entries in the Streamlit app's **Secrets** settings:
 
 ```toml
 AWS_ACCESS_KEY_ID = "YOUR_READ_ONLY_ACCESS_KEY_ID"
 AWS_SECRET_ACCESS_KEY = "YOUR_READ_ONLY_SECRET_ACCESS_KEY"
-AWS_REGION = "ap-southeast-2"
-S3_BUCKET_NAME = "your-railway-bucket"
+AWS_REGION = "YOUR_BUCKET_REGION"
+S3_BUCKET_NAME = "YOUR_BUCKET_NAME"
 S3_GOLD_PREFIX = "railway-gold/"
-# Optional: only needed for temporary AWS credentials
+```
+
+Alternatively, use separate prefixes:
+
+```toml
+AWS_ACCESS_KEY_ID = "YOUR_READ_ONLY_ACCESS_KEY_ID"
+AWS_SECRET_ACCESS_KEY = "YOUR_READ_ONLY_SECRET_ACCESS_KEY"
+AWS_REGION = "YOUR_BUCKET_REGION"
+S3_BUCKET_NAME = "YOUR_BUCKET_NAME"
+TRAIN_PREFIX = "railway-gold/trains/"
+STATION_PREFIX = "railway-gold/stations/"
+```
+
+If you use temporary AWS credentials, add the session token too:
+
+```toml
 AWS_SESSION_TOKEN = "YOUR_SESSION_TOKEN"
 ```
 
-The app recognizes these top-level secret names, as well as `AWS_DEFAULT_REGION` and the earlier `S3_BUCKET`, `TRAIN_PREFIX`, and `STATION_PREFIX` configuration. `S3_GOLD_PREFIX` is the common root: Parquet object paths or filenames beneath it must identify the dataset as `train`/`trains` or `station`/`stations`. If your objects use different naming, set `TRAIN_PREFIX` and `STATION_PREFIX` to their exact S3 prefixes instead. The matching dataset prefix must be readable by the IAM identity.
+**Never commit credentials to GitHub or paste them into chat.** The repository ignores `.streamlit/secrets.toml` for local development. For hosted deployments, use Streamlit's Secrets settings rather than committing a local secrets file.
 
-AWS credentials can alternatively be supplied through environment variables. Never commit credentials or paste them into chat.
+---
 
-## Least-privilege IAM policy
+## AWS permissions
 
-Create a dedicated IAM user/access key for Streamlit Community Cloud (never use root credentials). Substitute your bucket and Gold prefix to match the app settings:
+Create a dedicated IAM identity for the dashboard. Do not use your AWS root credentials. Grant only the permissions needed to list and read the Gold objects.
+
+Example policy for a bucket with the shared `railway-gold/` prefix—replace the example bucket name and prefix with your own:
 
 ```json
 {
@@ -39,39 +156,101 @@ Create a dedicated IAM user/access key for Streamlit Community Cloud (never use 
     {
       "Effect": "Allow",
       "Action": "s3:ListBucket",
-      "Resource": "arn:aws:s3:::your-railway-bucket",
+      "Resource": "arn:aws:s3:::YOUR_BUCKET_NAME",
       "Condition": {
         "StringLike": {
-          "s3:prefix": ["railway-gold/*"]
+          "s3:prefix": [
+            "railway-gold/*"
+          ]
         }
       }
     },
     {
       "Effect": "Allow",
       "Action": "s3:GetObject",
-      "Resource": [
-        "arn:aws:s3:::your-railway-bucket/railway-gold/*"
-      ]
+      "Resource": "arn:aws:s3:::YOUR_BUCKET_NAME/railway-gold/*"
     }
   ]
 }
 ```
 
-This dashboard needs no S3 write, delete, or public-bucket permissions. If you use a bucket encryption key managed by AWS KMS, the identity may also need narrowly scoped `kms:Decrypt` permission for that key.
+For separate prefixes, limit `s3:prefix` and `s3:GetObject` resources to those two prefixes. The dashboard does **not** need S3 write or delete permissions, and the bucket does **not** need to be public.
+
+If your objects use SSE-KMS encryption, the IAM identity may also require narrowly scoped `kms:Decrypt` access to the key used by the bucket.
+
+---
 
 ## Deploy to Streamlit Community Cloud
 
-1. Push this project to a GitHub repository. Keep `.streamlit/secrets.toml` out of Git.
-2. In Streamlit Community Cloud, create an app from the repository and set **Main file path** to `dashboard/app.py`.
-3. In the app's **Advanced settings → Secrets**, add the TOML configuration above with your actual bucket, prefixes, region, and dedicated read-only credentials.
-4. Deploy, then check the **Data freshness** tab and confirm both snapshots are being read. If the app already existed, reboot it after changing secrets or code.
+1. Push the project to GitHub.
+2. Sign in to Streamlit Community Cloud and create an app from the repository.
+3. Select the `main` branch.
+4. Set the **Main file path** to:
 
-Treat Streamlit secrets like passwords. Restrict repository access, rotate the access key if it is exposed, and prefer temporary credentials or an AWS-hosted backend with an IAM role for production.
+   ```text
+   dashboard/app.py
+   ```
 
-## Data assumptions
+5. Open the app's **Advanced settings → Secrets** and add the configuration described above using your actual bucket, region, prefixes, and read-only credentials.
+6. Deploy the app.
+7. Open the dashboard and check **Data freshness** to confirm that both datasets loaded successfully.
 
-- The configured train and station prefixes each contain at least one `.parquet` object.
-- When using one `S3_GOLD_PREFIX`, object paths or filenames beneath it must distinguish train and station datasets. Otherwise set `TRAIN_PREFIX` and `STATION_PREFIX` separately.
-- The app loads the most recently modified single Parquet object under each prefix. Have the pipeline publish a complete snapshot (for example, a uniquely named file) rather than overwriting a file while it is being read.
-- Cache lifetime is five minutes. Use **Refresh data** to clear the cache and fetch the current snapshots immediately.
-- Charts adapt to recognized train/station label columns and numeric columns. Share the exact Gold column names and S3 prefixes if you want the metrics and chart labels tailored to your pipeline.
+After changing the code or Secrets, wait for the app to redeploy or reboot it from Streamlit Community Cloud.
+
+---
+
+## Run locally
+
+From the repository root:
+
+```powershell
+python -m pip install -r dashboard/requirements.txt
+```
+
+Create `.streamlit/secrets.toml` in the repository root with the configuration shown above. This file is ignored by Git. Then start the dashboard:
+
+```powershell
+python -m streamlit run dashboard/app.py
+```
+
+Open the local URL printed in the terminal.
+
+---
+
+## Data refresh behavior
+
+S3 data is cached for five minutes to avoid downloading the Parquet files on every Streamlit rerun.
+
+The dashboard does not continuously poll S3 in the background. It loads fresh data when the app reruns after the cache expires, or when the **Refresh data** button is clicked. Publishing new Gold data does not automatically trigger an app rerun.
+
+---
+
+## Customization
+
+Charts and KPIs use the columns found in the train and station Parquet files. To improve the dashboard's automatic chart choices, use clear column names where practical, such as:
+
+```text
+train_number
+train_name
+avg_delay_min
+distance_km
+station_code
+station_name
+passenger_count
+```
+
+If your Gold datasets use different column names or paths, update the S3 prefixes in Streamlit Secrets or customize the dashboard's recognized columns and metrics in `dashboard/app.py`.
+
+---
+
+## Security notes
+
+- Keep the S3 bucket private.
+- Use a dedicated, read-only IAM identity for the dashboard.
+- Store credentials in Streamlit Secrets, not in source code or Git.
+- Never use AWS root credentials for the app.
+- Rotate the IAM access key if it is exposed.
+- Consider short-lived credentials or an AWS-hosted backend with an IAM role for production deployments.
+
+---
+````
