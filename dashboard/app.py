@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from datetime import datetime, timezone
 from io import BytesIO
 from typing import Any
@@ -26,7 +27,7 @@ st.markdown(
     :root { --ink: #152b3c; --muted: #748494; --teal: #087f8c; --line: #e6edf1; }
     html, body, [class*="css"] { font-family: 'DM Sans', sans-serif; }
     .stApp { background: #f5f8fa; }
-    h1, h2, h3 { font-family: 'Space Grotesk', sans-serif; color: var(--ink); }
+    h1, h2, h3 { font-family: 'Space Grotesk', sans-serif; color: var(--ink) !important; }
     .block-container { padding-top: 2.1rem; padding-bottom: 3rem; max-width: 1440px; }
     [data-testid="stSidebar"] { background: #102b3a; }
     [data-testid="stSidebar"] * { color: #edf5f6; }
@@ -45,15 +46,32 @@ st.markdown(
 
 
 def _setting(name: str, *, section: str | None = None, default: str = "") -> str:
-    env_value = os.getenv(name)
-    if env_value:
-        return env_value
+    aliases = {
+        "AWS_DEFAULT_REGION": ("AWS_DEFAULT_REGION", "AWS_REGION", "region"),
+        "AWS_ACCESS_KEY_ID": ("AWS_ACCESS_KEY_ID", "access_key_id"),
+        "AWS_SECRET_ACCESS_KEY": ("AWS_SECRET_ACCESS_KEY", "secret_access_key"),
+        "AWS_SESSION_TOKEN": ("AWS_SESSION_TOKEN", "session_token"),
+        "S3_BUCKET": ("S3_BUCKET", "S3_BUCKET_NAME"),
+        "S3_GOLD_PREFIX": ("S3_GOLD_PREFIX",),
+        "TRAIN_PREFIX": ("TRAIN_PREFIX",),
+        "STATION_PREFIX": ("STATION_PREFIX",),
+    }
+    names = aliases.get(name, (name,))
+    for candidate in names:
+        env_value = os.getenv(candidate)
+        if env_value:
+            return env_value
     try:
-        values: Any = st.secrets
-        if section:
-            values = values.get(section, {})
-        value = values.get(name, default)
-        return str(value) if value is not None else default
+        secrets: Any = st.secrets
+        for candidate in names:
+            if section:
+                value = secrets.get(section, {}).get(candidate)
+                if value:
+                    return str(value)
+            value = secrets.get(candidate)
+            if value:
+                return str(value)
+        return default
     except (FileNotFoundError, AttributeError):
         return default
 
@@ -78,19 +96,44 @@ def _aws_client(region: str):
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def _load_latest_parquet(bucket: str, prefix: str, region: str) -> tuple[pd.DataFrame, str, datetime]:
+def _load_latest_parquet(
+    bucket: str,
+    prefix: str,
+    region: str,
+    dataset_hint: str = "",
+) -> tuple[pd.DataFrame, str, datetime]:
     client = _aws_client(region)
     paginator = client.get_paginator("list_objects_v2")
     candidates: list[dict[str, Any]] = []
+    dataset_pattern = None
+    if dataset_hint:
+        terms = (
+            ("train", "trains")
+            if dataset_hint == "train"
+            else ("station", "stations")
+        )
+        dataset_pattern = re.compile(
+            r"(?:^|[^a-z])(?:" + "|".join(terms) + r")(?:[^a-z]|$)",
+            re.IGNORECASE,
+        )
     for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
         candidates.extend(
             item
             for item in page.get("Contents", [])
             if item["Key"].lower().endswith(".parquet")
+            and (
+                dataset_pattern is None
+                or dataset_pattern.search(item["Key"].replace("/", "_"))
+            )
         )
     if not candidates:
+        detail = (
+            f" with a '{dataset_hint}' directory or filename"
+            if dataset_hint
+            else ""
+        )
         raise FileNotFoundError(
-            f"No .parquet objects were found in s3://{bucket}/{prefix}"
+            f"No .parquet objects{detail} were found in s3://{bucket}/{prefix}"
         )
     latest = max(candidates, key=lambda item: item["LastModified"])
     response = client.get_object(Bucket=bucket, Key=latest["Key"])
@@ -117,7 +160,12 @@ def _label_column(frame: pd.DataFrame, candidates: tuple[str, ...]) -> str | Non
     return None
 
 
-def _chart(frame: pd.DataFrame, title: str, category_candidates: tuple[str, ...]) -> None:
+def _chart(
+    frame: pd.DataFrame,
+    title: str,
+    category_candidates: tuple[str, ...],
+    chart_key: str,
+) -> None:
     if frame.empty:
         st.info(f"No {title.lower()} records are available in this snapshot.")
         return
@@ -178,7 +226,7 @@ def _chart(frame: pd.DataFrame, title: str, category_candidates: tuple[str, ...]
         )
         fig.update_xaxes(showgrid=True, gridcolor="#edf1f4", zeroline=False)
         fig.update_yaxes(showgrid=False)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, use_container_width=True, key=chart_key)
     elif category:
         counts = frame[category].value_counts().head(10).sort_values().reset_index()
         counts.columns = [category, "records"]
@@ -199,7 +247,7 @@ def _chart(frame: pd.DataFrame, title: str, category_candidates: tuple[str, ...]
             title_font_family="Space Grotesk",
             showlegend=False,
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, use_container_width=True, key=chart_key)
     else:
         st.info(
             f"{title} data loaded ({len(frame):,} rows), but no recognized label "
@@ -212,6 +260,7 @@ def _dataset_section(
     title: str,
     category_candidates: tuple[str, ...],
     object_key: str | None,
+    chart_key: str,
 ) -> None:
     st.subheader(title)
     if frame is None:
@@ -219,7 +268,7 @@ def _dataset_section(
         return
     left, right = st.columns([1.15, 1])
     with left:
-        _chart(frame, title, category_candidates)
+        _chart(frame, title, category_candidates, chart_key)
     with right:
         st.markdown("**Latest records**")
         st.dataframe(frame.head(12), use_container_width=True, hide_index=True)
@@ -253,8 +302,21 @@ with status:
     st.markdown('<br><span class="status-pill">S3 · GOLD LAYER</span>', unsafe_allow_html=True)
 
 bucket = _setting("S3_BUCKET", section="data")
-train_prefix = _setting("TRAIN_PREFIX", section="data", default="gold/trains/")
-station_prefix = _setting("STATION_PREFIX", section="data", default="gold/stations/")
+gold_prefix = _setting("S3_GOLD_PREFIX", section="data")
+train_prefix = _setting("TRAIN_PREFIX", section="data")
+station_prefix = _setting("STATION_PREFIX", section="data")
+train_hint = ""
+station_hint = ""
+if gold_prefix:
+    gold_prefix = gold_prefix.strip("/") + "/"
+    if not train_prefix:
+        train_prefix = gold_prefix
+        train_hint = "train"
+    if not station_prefix:
+        station_prefix = gold_prefix
+        station_hint = "station"
+train_prefix = train_prefix or "gold/trains/"
+station_prefix = station_prefix or "gold/stations/"
 region = _setting("AWS_DEFAULT_REGION", section="aws") or _setting(
     "region", section="aws", default="ap-south-1"
 )
@@ -276,14 +338,19 @@ if not bucket:
 
 with st.spinner("Connecting to S3 and loading the latest Gold snapshots..."):
     try:
-        trains, train_key, train_time = _load_latest_parquet(bucket, train_prefix, region)
-        stations, station_key, station_time = _load_latest_parquet(bucket, station_prefix, region)
+        trains, train_key, train_time = _load_latest_parquet(
+            bucket, train_prefix, region, train_hint
+        )
+        stations, station_key, station_time = _load_latest_parquet(
+            bucket, station_prefix, region, station_hint
+        )
     except (BotoCoreError, ClientError, FileNotFoundError, OSError, ValueError) as exc:
         st.error("Could not load the configured Gold data from S3.")
         st.code(str(exc))
         st.info(
             "Check the bucket, region, prefixes, IAM permissions, and that each prefix contains "
-            "at least one complete Parquet snapshot."
+            "at least one complete Parquet snapshot. With S3_GOLD_PREFIX, filenames or folders "
+            "must identify train and station data; otherwise set TRAIN_PREFIX and STATION_PREFIX separately."
         )
         st.stop()
 
@@ -319,12 +386,14 @@ with overview_tab:
             trains,
             "Train analytics",
             ("train_name", "train_number", "train_no", "train_id", "name"),
+            "train-overview",
         )
     with right:
         _chart(
             stations,
             "Station analytics",
             ("station_name", "station_code", "station_id", "station", "name"),
+            "station-overview",
         )
     st.caption("Charts use the available category and numeric columns in your Gold snapshots.")
 
@@ -334,6 +403,7 @@ with trains_tab:
         "Train analytics",
         ("train_name", "train_number", "train_no", "train_id", "name"),
         train_key,
+        "train-details",
     )
 with stations_tab:
     _dataset_section(
@@ -341,6 +411,7 @@ with stations_tab:
         "Station analytics",
         ("station_name", "station_code", "station_id", "station", "name"),
         station_key,
+        "station-details",
     )
 with freshness_tab:
     st.subheader("Gold snapshot health")
